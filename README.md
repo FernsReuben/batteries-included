@@ -2,50 +2,11 @@
 
 A starter template demonstrating a three-tier architecture with GraphQL middleware.
 
-## Deploy in 5 Minutes
+## Deploy
 
-> **Before clicking Deploy**, complete Steps 1-3 below to get your Supabase credentials ready.
+[![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://dashboard.render.com/blueprints/new?repo=https://github.com/viaduct-dev/batteries-included&branch=render-template)
 
-### Step 1: Create a Supabase Project
-
-1. Go to [supabase.com](https://supabase.com) and sign in
-2. Click **New Project**
-3. Choose a name and password, then click **Create**
-4. Wait ~2 minutes for the project to provision
-
-### Step 2: Enable Email Authentication
-
-1. In your Supabase project, go to **Authentication** (left sidebar)
-2. Click **Providers**
-3. Find **Email** and make sure it's **Enabled**
-
-> **For Testing**: If you want to test signups without email verification, go to **Authentication** → **Sign In / Providers** → **User Signups** and disable **"Confirm email"**. You can re-enable this for production.
-
-### Step 3: Get Your API Credentials
-
-Go to **Settings** → **API** in your Supabase dashboard. You'll need these 3 values:
-
-| Render Field | Where to Find It |
-|--------------|------------------|
-| `SUPABASE_URL` | **Project URL** (e.g., `https://abcdefg.supabase.co`) |
-| `SUPABASE_ANON_KEY` | **anon public** key (starts with `eyJ...`) |
-| `SUPABASE_SERVICE_ROLE_KEY` | **service_role** key (starts with `eyJ...`, keep secret!) |
-
-### Step 4: Deploy to Render
-
-[![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy)
-
-1. Click the button above
-2. Connect your GitHub account if prompted
-3. **Rename your services** (recommended):
-   - Change `viaduct-frontend` to `yourapp` (this becomes your public URL: `yourapp.onrender.com`)
-   - Change `viaduct-backend` to `yourapp-backend`
-4. Paste the 3 Supabase values from Step 3 into the form
-5. Click **Apply**
-
-The deploy takes ~5 minutes. Once complete, visit your frontend URL to start using the app!
-
-> **Note**: If you skip renaming, your app will be at `viaduct-frontend.onrender.com`. You can rename services later in Render's dashboard, but URLs will change.
+See the **[Setup Guide](docs/SETUP_GUIDE.md)** for step-by-step deployment instructions with screenshots, including how to get your Supabase credentials and configure Render.
 
 ---
 
