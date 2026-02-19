@@ -91,5 +91,7 @@ EXPOSE 8080
 # JVM options for container environment
 ENV JAVA_OPTS="-XX:+UseContainerSupport -XX:MaxRAMPercentage=75.0 --add-opens java.base/java.lang=ALL-UNNAMED"
 
-# Restore from CRaC checkpoint (migrations run via Render preDeployCommand)
-CMD ["java", "-XX:CRaCEngine=warp", "-XX:CRaCRestoreFrom=/app/cr"]
+# Run migrations then restore from CRaC checkpoint
+RUN printf '#!/bin/bash\nset -e\n/app/scripts/run-migrations.sh\nexec java -XX:CRaCEngine=warp -XX:CRaCRestoreFrom=/app/cr\n' > /app/entrypoint.sh && chmod +x /app/entrypoint.sh
+
+CMD ["/app/entrypoint.sh"]
