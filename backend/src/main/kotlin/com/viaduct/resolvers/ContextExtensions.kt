@@ -14,16 +14,6 @@ internal val ExecutionContext.requestContextInternal: RequestContext
     get() = requestContext as RequestContext
 
 /**
- * Get a request-scoped dependency from Koin with type safety.
- * Usage in resolvers: ctx.get<SomeDependency>()
- *
- * This allows resolvers to access request-scoped dependencies without
- * needing to know about RequestContext at all.
- */
-inline fun <reified T : Any> ExecutionContext.get(): T =
-    requestContextInternal.get()
-
-/**
  * Extension property to access the authenticated Supabase client directly.
  * Usage in resolvers: ctx.authenticatedClient
  */

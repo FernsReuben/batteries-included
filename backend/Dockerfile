@@ -2,17 +2,18 @@
 # Docker context is project root (.) to access schema/migrations
 #
 # Uses Azul Zulu with CRaC (Coordinated Restore at Checkpoint) to capture
-# expensive Viaduct schema compilation in a checkpoint image, enabling
-# near-instant startup on restore.
+# Viaduct schema compilation AND Koin service initialization in a checkpoint
+# image, enabling near-instant startup on restore.
 #
 # Build stages:
 #   1. builder    – Gradle build (produces installDist output)
-#   2. checkpoint – Starts the CRaC entry point, compiles the Viaduct schema,
-#                   and writes a CRaC checkpoint image to /app/cr
+#   2. checkpoint – Compiles the Viaduct schema, initializes Koin with all
+#                   singletons (services, resolvers, HTTP clients), and writes
+#                   a CRaC checkpoint image to /app/cr
 #   3. migrations – (optional) Runs DB migrations at build time if credentials
 #                   are provided as build args. This stage is NOT part of the
 #                   final image, so credentials never leak into image layers.
-#   4. runtime    – Restores from checkpoint, reads live env vars, starts Ktor
+#   4. runtime    – Restores from checkpoint and starts Ktor/Netty (sub-second)
 
 # ── Stage 1: Build the application ──────────────────────────────────────
 FROM azul/zulu-openjdk:21 AS builder
@@ -54,11 +55,25 @@ RUN chmod +x /app/bin/viaduct-backend
 # Create the checkpoint directory
 RUN mkdir -p /app/cr
 
+# Provide Supabase credentials so the checkpoint captures fully-initialized
+# Koin singletons (SupabaseService, AuthService, HttpClient, etc.).
+# These are consumed by CracMain during pre-checkpoint init.
+# If not provided, the app still checkpoints but with dummy credentials.
+ARG SUPABASE_ANON_KEY=""
+ARG SUPABASE_PROJECT_ID=""
+ARG SUPABASE_URL=""
+ARG ALLOWED_ORIGINS=""
+ENV SUPABASE_ANON_KEY=$SUPABASE_ANON_KEY
+ENV SUPABASE_PROJECT_ID=$SUPABASE_PROJECT_ID
+ENV SUPABASE_URL=$SUPABASE_URL
+ENV ALLOWED_ORIGINS=$ALLOWED_ORIGINS
+
 # Take a CRaC checkpoint using the Warp engine (no CRIU, no privileges needed).
 # The CracMain entry point:
 #   1. Compiles the Viaduct GraphQL schema (expensive)
-#   2. Sees -Dcrac.checkpoint and calls Core.checkpointRestore()
-#   3. Warp snapshots the JVM state and the process exits
+#   2. Initializes Koin with all singletons (services, resolvers, HTTP clients)
+#   3. Sees -Dcrac.checkpoint and calls Core.checkpointRestore()
+#   4. Warp snapshots the JVM state and the process exits
 ENV JAVA_OPTS="-XX:CRaCEngine=warp -XX:CRaCCheckpointTo=/app/cr -Dcrac.checkpoint=true --add-opens java.base/java.lang=ALL-UNNAMED"
 # The JVM exits with a non-zero code after a successful checkpoint (SIGKILL/137).
 # Verify the checkpoint directory is non-empty to confirm it worked.

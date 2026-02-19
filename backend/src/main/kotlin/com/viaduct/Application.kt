@@ -3,7 +3,6 @@ package com.viaduct
 import com.fasterxml.jackson.module.kotlin.jacksonObjectMapper
 import com.viaduct.config.DelegatingTenantCodeInjector
 import com.viaduct.config.KoinTenantCodeInjector
-import com.viaduct.config.appModule
 import com.viaduct.models.GraphQLRequest
 import com.viaduct.plugins.GraphQLAuthentication
 import com.viaduct.plugins.cachedRequestBody
@@ -20,10 +19,8 @@ import io.ktor.server.request.*
 import io.ktor.server.response.*
 import io.ktor.server.routing.*
 import io.ktor.server.plugins.cors.routing.CORS
+import org.koin.core.Koin
 import org.slf4j.event.Level
-import org.koin.ktor.plugin.Koin
-import org.koin.ktor.ext.getKoin
-import org.koin.logger.slf4jLogger
 import viaduct.service.api.ExecutionInput as ViaductExecutionInput
 import viaduct.service.api.SchemaId
 import viaduct.service.api.Viaduct
@@ -100,19 +97,20 @@ fun deriveSupabaseUrl(explicitUrl: String?, projectId: String?, anonKey: String?
 }
 
 /**
- * Configure the Ktor application with plugins, Koin DI, and GraphQL routing.
+ * Configure the Ktor application with plugins and GraphQL routing.
  *
- * The pre-compiled [viaduct] instance and [cracInjector] are created by the
- * entry point in [CracMain] before the Ktor server starts. The injector's
- * delegate is wired to the live Koin instance here so that resolver lookups
- * work at request time.
+ * The pre-compiled [viaduct] instance, [cracInjector], and standalone [koin]
+ * container are all created by the entry point in [CracMain] before the Ktor
+ * server starts. Koin is managed externally (not as a Ktor plugin) so that
+ * singletons survive CRaC checkpoint/restore independently of Netty.
  */
 fun Application.configureApplication(
     supabaseUrl: String,
     supabaseKey: String,
     configurationComplete: Boolean,
     viaduct: Viaduct,
-    cracInjector: DelegatingTenantCodeInjector
+    cracInjector: DelegatingTenantCodeInjector,
+    koin: Koin
 ) {
     // Create object mapper for JSON serialization
     val objectMapper = jacksonObjectMapper()
@@ -196,31 +194,24 @@ fun Application.configureApplication(
         }
     }
 
-    // Install Koin plugin for dependency injection (Koin 4.x pattern)
-    install(Koin) {
-        slf4jLogger()
-        modules(appModule(supabaseUrl, supabaseKey))
-    }
-
     // Register shutdown hook to close HttpClient properly
+    val httpClient = koin.getOrNull<HttpClient>()
     monitor.subscribe(ApplicationStopped) {
-        val httpClient = getKoin().getOrNull<HttpClient>()
         httpClient?.close()
     }
 
+    // Get services from external Koin for the auth plugin and routing
+    val authService = koin.get<AuthService>()
+    val supabaseService = koin.get<SupabaseService>()
+
     // Install GraphQL authentication plugin
-    // This handles extracting and validating auth tokens as a cross-cutting concern
+    // Services are injected from the external Koin container
     install(GraphQLAuthentication) {
         this.objectMapper = objectMapper
+        this.authService = authService
+        this.supabaseService = supabaseService
+        this.httpClient = httpClient ?: error("HttpClient not found in Koin")
     }
-
-    // Wire the delegating injector to the live Koin instance so that
-    // the pre-compiled Viaduct schema can resolve resolvers at request time.
-    val koin = getKoin()
-    cracInjector.delegate = KoinTenantCodeInjector(koin)
-
-    // Get services from Koin for routing
-    val authService = koin.get<AuthService>()
 
     routing {
         post("/graphql") {

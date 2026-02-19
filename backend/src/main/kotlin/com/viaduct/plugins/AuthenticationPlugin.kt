@@ -1,13 +1,15 @@
 package com.viaduct.plugins
 
 import com.fasterxml.jackson.databind.ObjectMapper
+import com.viaduct.SupabaseService
 import com.viaduct.config.RequestContext
+import com.viaduct.services.AuthService
+import io.ktor.client.*
 import io.ktor.http.*
 import io.ktor.server.application.*
 import io.ktor.server.request.*
 import io.ktor.server.response.*
 import io.ktor.util.*
-import org.koin.ktor.plugin.scope
 
 /**
  * Public operations that don't require authentication.
@@ -42,7 +44,7 @@ private fun isPublicOperation(requestBody: String, objectMapper: ObjectMapper): 
  * This plugin intercepts requests and:
  * 1. Checks if the request is for a public operation (signIn, signUp, etc.)
  * 2. If public, marks the request as unauthenticated and allows it through
- * 3. Otherwise, extracts authentication from the request scope (via Koin)
+ * 3. Otherwise, creates a RequestContext directly from the injected services
  * 4. Stores the RequestContext in request attributes for route handlers
  * 5. Returns 401 Unauthorized if authentication fails
  */
@@ -51,6 +53,9 @@ val GraphQLAuthentication = createApplicationPlugin(
     createConfiguration = ::GraphQLAuthenticationConfiguration
 ) {
     val objectMapper = pluginConfig.objectMapper
+    val authService = pluginConfig.authService
+    val supabaseService = pluginConfig.supabaseService
+    val httpClient = pluginConfig.httpClient
 
     onCall { call ->
         // Only apply authentication to GraphQL endpoints, but skip OPTIONS (CORS preflight)
@@ -70,12 +75,18 @@ val GraphQLAuthentication = createApplicationPlugin(
         }
 
         try {
-            // Get RequestContext from Koin's request scope
-            // The requestScope factory automatically:
-            // 1. Extracts the token from ApplicationCall headers
-            // 2. Verifies the token with AuthService
-            // 3. Creates GraphQLRequestContext, AuthenticatedSupabaseClient, and RequestContext
-            val requestContext = call.scope.get<RequestContext>()
+            // Extract the access token from the Authorization header
+            val authHeader = call.request.headers["Authorization"]
+            val accessToken = authHeader?.removePrefix("Bearer ")?.trim()
+                ?: throw IllegalArgumentException("Authorization header required")
+
+            // Create the request context directly from services
+            val graphQLContext = authService.createRequestContext(accessToken)
+            val authenticatedClient = supabaseService.createAuthenticatedClient(accessToken, httpClient)
+            val requestContext = RequestContext(
+                graphQLContext = graphQLContext,
+                authenticatedClient = authenticatedClient
+            )
 
             // Store in call attributes for route handlers to access
             call.attributes.put(RequestContextKey, requestContext)
@@ -89,7 +100,6 @@ val GraphQLAuthentication = createApplicationPlugin(
             )
         } catch (e: Exception) {
             // Authentication-related errors (invalid token, token verification failures)
-            // Koin may wrap exceptions, so check the root cause for authentication-specific messages
             val rootCause = generateSequence(e as Throwable) { it.cause }.last()
             val rootMessage = rootCause.message ?: e.message
 
@@ -117,10 +127,14 @@ val GraphQLAuthentication = createApplicationPlugin(
 }
 
 /**
- * Configuration for GraphQL authentication plugin
+ * Configuration for GraphQL authentication plugin.
+ * Services are injected from the external Koin container.
  */
 class GraphQLAuthenticationConfiguration {
     var objectMapper: ObjectMapper = ObjectMapper()
+    lateinit var authService: AuthService
+    lateinit var supabaseService: SupabaseService
+    lateinit var httpClient: HttpClient
 }
 
 /**
