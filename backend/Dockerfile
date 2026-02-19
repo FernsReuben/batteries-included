@@ -9,7 +9,10 @@
 #   1. builder    – Gradle build (produces installDist output)
 #   2. checkpoint – Starts the CRaC entry point, compiles the Viaduct schema,
 #                   and writes a CRaC checkpoint image to /app/cr
-#   3. runtime    – Restores from checkpoint, reads live env vars, starts Ktor
+#   3. migrations – (optional) Runs DB migrations at build time if credentials
+#                   are provided as build args. This stage is NOT part of the
+#                   final image, so credentials never leak into image layers.
+#   4. runtime    – Restores from checkpoint, reads live env vars, starts Ktor
 
 # ── Stage 1: Build the application ──────────────────────────────────────
 FROM azul/zulu-openjdk:21 AS builder
@@ -62,7 +65,42 @@ ENV JAVA_OPTS="-XX:CRaCEngine=warp -XX:CRaCCheckpointTo=/app/cr -Dcrac.checkpoin
 RUN /app/bin/viaduct-backend; \
     test "$(ls -A /app/cr)" || { echo "Checkpoint failed: /app/cr is empty"; exit 1; }
 
-# ── Stage 3: Runtime (restore from checkpoint) ─────────────────────────
+# ── Stage 3: Run migrations at build time (optional) ─────────────────
+# This stage runs migrations if SUPABASE_SERVICE_ROLE_KEY is provided as
+# a build arg. The stage is ephemeral — credentials never appear in the
+# final image since only a dummy marker file is copied out.
+#
+#   podman build --build-arg SUPABASE_SERVICE_ROLE_KEY=... \
+#                --build-arg SUPABASE_PROJECT_ID=... ...
+#
+FROM ubuntu:22.04 AS migrations
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    postgresql-client \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY schema/migrations/ /app/migrations/
+COPY backend/scripts/run-migrations.sh /app/scripts/run-migrations.sh
+RUN chmod +x /app/scripts/run-migrations.sh
+
+ARG SUPABASE_SERVICE_ROLE_KEY
+ARG SUPABASE_PROJECT_ID
+ARG SUPABASE_ANON_KEY
+ARG SUPABASE_URL
+
+# Run migrations if credentials are available; skip gracefully if not.
+RUN if [ -n "$SUPABASE_SERVICE_ROLE_KEY" ]; then \
+        echo "[Build] Running database migrations..."; \
+        /app/scripts/run-migrations.sh; \
+    else \
+        echo "[Build] No SUPABASE_SERVICE_ROLE_KEY — skipping build-time migrations"; \
+    fi
+
+# Write a marker so the runtime stage can COPY from this stage,
+# which forces Docker to actually execute it.
+RUN date -u > /app/migrations-ran
+
+# ── Stage 4: Runtime (restore from checkpoint) ─────────────────────────
 FROM azul/zulu-openjdk:21-jdk-crac
 
 WORKDIR /app
@@ -78,12 +116,9 @@ COPY --from=builder /app/build/install/viaduct-backend/ /app/
 # Copy the CRaC checkpoint image
 COPY --from=checkpoint /app/cr/ /app/cr/
 
-# Copy migration files and script from project root
-COPY schema/migrations/ /app/migrations/
-COPY backend/scripts/run-migrations.sh /app/scripts/run-migrations.sh
-
-# Make scripts executable
-RUN chmod +x /app/scripts/run-migrations.sh
+# Force the migrations stage to run by copying its marker file.
+# This is a no-op file — no credentials leak into this layer.
+COPY --from=migrations /app/migrations-ran /tmp/migrations-ran
 
 # Expose port (Render sets PORT env var, defaults to 8080)
 EXPOSE 8080
@@ -91,8 +126,5 @@ EXPOSE 8080
 # JVM options for container environment
 ENV JAVA_OPTS="-XX:+UseContainerSupport -XX:MaxRAMPercentage=75.0 --add-opens java.base/java.lang=ALL-UNNAMED"
 
-# Restore from CRaC checkpoint immediately, run migrations in the background.
-# The server starts accepting requests right away; migrations run asynchronously.
-RUN printf '#!/bin/bash\nset -e\n/app/scripts/run-migrations.sh &\nexec java -XX:CRaCEngine=warp -XX:CRaCRestoreFrom=/app/cr\n' > /app/entrypoint.sh && chmod +x /app/entrypoint.sh
-
-CMD ["/app/entrypoint.sh"]
+# Restore from CRaC checkpoint
+CMD ["java", "-XX:CRaCEngine=warp", "-XX:CRaCRestoreFrom=/app/cr"]
