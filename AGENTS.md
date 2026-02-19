@@ -194,6 +194,46 @@ Supabase PostgreSQL (port 54321)
 
 3. **GraphQL Schema**: Uses camelCase field names (not snake_case like raw Supabase). Schema defined in `.graphqls` files under `backend/src/main/viaduct/schema/`.
 
+### CRaC Startup Architecture
+
+The backend uses [CRaC](https://openjdk.org/projects/crac/) (Coordinated Restore at Checkpoint) with the Azul Zulu Warp engine to achieve sub-second cold starts. Warp is a rootless, JVM-level checkpoint engine — it serializes the Java heap without requiring CRIU or container privileges.
+
+**Docker build stages** (`backend/Dockerfile`):
+
+1. **builder** — Gradle builds the application distribution (`installDist`)
+2. **checkpoint** — Runs `CracMain` with `-Dcrac.checkpoint=true`, which:
+   - Compiles the Viaduct GraphQL schema (expensive)
+   - Initializes a standalone Koin container with all singletons (HttpClient, SupabaseService, AuthService, resolvers, etc.)
+   - Starts and stops a throwaway Netty server to force Netty class loading
+   - Calls `Core.checkpointRestore()` — Warp snapshots the JVM heap and exits
+3. **migrations** — (optional) Runs database migrations if `SUPABASE_SERVICE_ROLE_KEY` is provided as a build arg. Ephemeral stage — credentials never appear in the final image.
+4. **runtime** — Restores from checkpoint with `java -XX:CRaCEngine=warp -XX:CRaCRestoreFrom=/app/cr`
+
+**Runtime restore flow** (`CracMain.kt`):
+
+When the container starts, Warp deserializes the heap into a fresh JVM process. `Core.checkpointRestore()` returns, and the code resumes at Phase 3:
+
+1. Creates a new `embeddedServer(Netty, ...)` — only Ktor plugin installation and Netty port binding happen here
+2. The Koin singletons and Viaduct schema survive from the checkpoint in the heap
+3. `configureApplication()` installs CORS, auth, content negotiation, and routing, wiring them to the pre-existing Koin services
+
+**Key design decisions**:
+
+- **Koin is standalone** — not installed as a Ktor plugin. This decouples service lifecycle from the Netty server, allowing singletons to survive checkpoint/restore while Netty is created fresh.
+- **Auth plugin creates RequestContext directly** — instead of using Koin's request scope (`call.scope`), the `GraphQLAuthentication` plugin receives `AuthService`, `SupabaseService`, and `HttpClient` via its configuration and constructs `RequestContext` per-request.
+- **Supabase credentials can be baked in** — passed as Docker build args (`SUPABASE_ANON_KEY`, `SUPABASE_PROJECT_ID`, etc.) to the checkpoint stage. If not provided, the checkpoint still captures class loading and schema compilation.
+- **Warp exit code 137** — a successful Warp checkpoint exits with SIGKILL. The Dockerfile handles this with `test "$(ls -A /app/cr)"` to verify the checkpoint directory is non-empty.
+
+**Files involved**:
+
+| File | Role |
+|------|------|
+| `CracMain.kt` | Entry point with 3-phase startup (pre-init, checkpoint, server start) |
+| `DelegatingTenantCodeInjector.kt` | Swappable injector — allows Viaduct schema compilation before Koin exists |
+| `KoinModule.kt` | Defines all Koin singletons (services, resolvers, HTTP client) |
+| `Application.kt` | Configures Ktor plugins and routing, accepts external Koin instance |
+| `AuthenticationPlugin.kt` | Creates RequestContext directly from injected services |
+
 ## Code Organization
 
 ### Frontend (`src/`)
