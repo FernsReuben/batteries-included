@@ -58,6 +58,7 @@ test-results/
 playwright-report/
 playwright/.cache/
 .playwright-mcp/
+.playwright-user-data/
 
 # MCP
 .mcp.json
