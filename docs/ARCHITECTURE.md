@@ -65,49 +65,9 @@ Key tasks:
 | `mise run stop` | Stop Supabase and Podman |
 | `mise run diagnose-podman` | Debug Podman socket issues |
 
-## CRaC Startup Architecture
+## CRaC (Docker Production Startup)
 
-The backend uses [CRaC](https://openjdk.org/projects/crac/) (Coordinated Restore at Checkpoint) with the Azul Zulu Warp engine for sub-second cold starts (~368ms to first HTTP response).
-
-### Docker Build Stages (`backend/Dockerfile`)
-
-1. **builder** — Gradle `installDist`
-2. **checkpoint** — Runs `CracMain` with `-Dcrac.checkpoint=true`:
-   - Compiles the Viaduct GraphQL schema
-   - Initializes Koin singletons (HttpClient, SupabaseService, AuthService, resolvers)
-   - Starts the real CIO server — `configureApplication()` installs all plugins and routes
-   - `CracServer.beforeCheckpoint()` calls `server.engine.stop()` (unbinds port, preserves Application)
-   - Warp snapshots the JVM heap and exits (exit code 137 is expected)
-3. **migrations** — Runs pending SQL migrations if `SUPABASE_SERVICE_ROLE_KEY` is provided as a build arg. Ephemeral stage — credentials never appear in the final image.
-4. **runtime** — `java -XX:CRaCEngine=warp -XX:CRaCRestoreFrom=/app/cr`
-
-### Restore Flow
-
-When the container starts, Warp deserializes the heap. `CracServer.afterRestore()`:
-
-1. Re-reads `PORT` from the environment (hosting platforms inject it at runtime, after checkpoint)
-2. Creates a fresh `CIOApplicationEngine` via `CIO.create()` reusing the preserved Application
-3. Binds the port — `configureApplication()` does NOT run again
-
-All Koin singletons, the compiled Viaduct schema, and all Ktor plugins/routes survive in the heap.
-
-### Key Design Decisions
-
-- **`server.engine.stop()` not `server.stop()`** — the former unbinds the port; the latter destroys the Application
-- **PORT re-read at restore** — the checkpoint bakes in the default (10000), but `afterRestore()` reads `System.getenv("PORT")` fresh
-- **Koin is standalone** — not installed as a Ktor plugin, so singletons survive while the CIO engine is recreated
-- **Warp exit code 137** — Dockerfile verifies the checkpoint directory is non-empty rather than checking exit code
-
-### Key Files
-
-| File | Role |
-|------|------|
-| `CracMain.kt` | Entry point — pre-init, server start, checkpoint/restore |
-| `CracServer.kt` | `org.crac.Resource` — manages CIO engine lifecycle across checkpoint |
-| `DelegatingTenantCodeInjector.kt` | Allows Viaduct schema compilation before Koin exists |
-| `KoinModule.kt` | All Koin singletons (services, resolvers, HTTP client) |
-| `Application.kt` | Ktor plugins and routing |
-| `AuthenticationPlugin.kt` | Creates RequestContext per-request from injected services |
+The production Docker image (`backend/Dockerfile`) uses [CRaC](https://openjdk.org/projects/crac/) with Azul Zulu Warp to snapshot the JVM heap after full initialization. At runtime, the container restores from the snapshot in ~368ms instead of doing a cold JVM start. This is transparent — no application code changes needed for normal development.
 
 ## Database Migrations
 
