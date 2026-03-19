@@ -1,28 +1,58 @@
-# Repository Guidelines
+# AGENTS.md
 
-## Project Structure & Module Organization
-- `src/` houses the React + Vite UI (components, pages, shared `lib/`, hooks) with global styles in `index.css`.
-- `backend/` runs the Viaduct GraphQL service: Kotlin lives in `src/main/kotlin`, module schemas in each `viaduct/schema`, Gradle build files at the root.
-- Local Supabase manifests and migrations sit in `supabase/`.
-- Playwright specs land in `e2e/` with artifacts under `playwright-report/` and `test-results/`.
+This file provides guidance to AI coding assistants working in this repository.
 
-## Build, Test, and Development Commands
-- `mise install` provisions Java, Podman, Supabase CLI, and exports dev env vars.
-- `mise run dev` starts Supabase, backend, and frontend; `mise run stop`/`mise run status` manage lifecycle.
-- `npm run dev` runs only the UI; `npm run build` + `npm run preview` check production output.
-- `npm run lint` enforces the ESLint config—resolve warnings before merging.
-- `npm run test:e2e` (plus `:ui`, `:headed`, `:debug`) drives Playwright suites after UI-impacting work.
-- `cd backend && ./gradlew build` compiles the Kotlin service; `./gradlew test` runs backend unit coverage.
+## Project Overview
 
-## Coding Style & Naming Conventions
-- TypeScript stays in functional React components with 2-space indentation and strict typing. Components use `PascalCase`, hooks `useThing`, and helpers `camelCase`.
-- Keep Tailwind utility strings near the elements they style; order classes layout → spacing → color and prefer `clsx`/`tailwind-merge` helpers.
-- ESLint (`eslint.config.js`) enforces React Hooks and TypeScript rules—run `npm run lint` or enable on-save fixes in your editor.
+Three-tier Viaduct template: **React/Vite** frontend, **Viaduct GraphQL** backend (Kotlin/Ktor), **Supabase PostgreSQL** database.
 
-## Testing Guidelines
-- Add or update Playwright specs in `e2e/*.spec.ts` for meaningful UI flows; assert visible outcomes rather than implementation details.
-- Place backend coverage in `backend/src/test/kotlin`; favor deterministic tests and stub Supabase access when live data is unnecessary.
+## Detailed Documentation
 
-## Environment & Security Notes
-- Credentials in `mise.toml` support local work only; override via `.env.local` for personal secrets and avoid committing new keys.
-- Default GraphQL endpoint is `http://localhost:8080/graphql`; update clients in `src/lib` when targeting staging or production.
+| Document | Purpose |
+|----------|---------|
+| [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | Services, ports, mise, CRaC warp, Podman, migrations, troubleshooting |
+| [`docs/IMPLEMENTING_A_RESOURCE.md`](docs/IMPLEMENTING_A_RESOURCE.md) | Complete walkthrough of adding a new resource across all layers |
+| [`docs/SETUP_GUIDE.md`](docs/SETUP_GUIDE.md) | First-time setup with Supabase and Render |
+| [`backend/src/main/kotlin/com/viaduct/examples/`](backend/src/main/kotlin/com/viaduct/examples/) | Example resolver implementations (use as templates) |
+
+## Development Commands
+
+### mise (Recommended)
+
+```bash
+mise install        # Install all tools (Java 21, Podman, Supabase CLI, Node)
+mise run dev        # Start full environment (Podman + Supabase + backend + frontend)
+mise run deps-start # Start dependencies only (Podman + Supabase)
+mise run backend    # Start backend only (requires deps-start first)
+mise run frontend   # Start frontend only
+mise run status     # Check service status
+mise run stop       # Stop all services
+mise run test       # Run backend tests (starts Supabase containers automatically)
+```
+
+### Direct commands
+
+```bash
+# Frontend
+npm install && npm run dev    # Dev server on port 5173
+npm run build                 # Production build
+npm run lint                  # ESLint
+
+# Backend
+cd backend
+./gradlew run                 # Server on port 10000
+./gradlew test                # Tests (auto-starts Supabase)
+./gradlew build               # Full build
+
+# Database
+supabase start                # Start local Supabase
+supabase db reset             # Reset to migrations
+```
+
+## Authentication
+
+Frontend sends `Authorization: Bearer <token>` and `X-User-Id: <id>` headers. Public operations (no auth required): `supabaseConfig` query, `signIn`/`signUp`/`refreshToken` mutations.
+
+## Deployment
+
+Render.com via `render.yaml` blueprint. See [`docs/SETUP_GUIDE.md`](docs/SETUP_GUIDE.md) for credentials and setup. Migrations run automatically on every deploy.

@@ -2,66 +2,60 @@
 
 A starter template demonstrating a three-tier architecture with GraphQL middleware.
 
-To build your Viaduct-backed application, first fork this repository as a starting point.  After you successfully build and test our basline functionality (using both the frontend and GraphiQL), you're ready to build your app!
+## Deploy
+
+[![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://dashboard.render.com/blueprints/new?repo=https://github.com/viaduct-dev/batteries-included&branch=render-template)
+
+See the **[Setup Guide](docs/SETUP_GUIDE.md)** for step-by-step deployment instructions with screenshots, including how to get your Supabase credentials and configure Render.
+
+---
 
 ## Architecture
 
-- **Frontend** (in `src/`): React + Vite with shadcn/ui components (TypeScript)
-- **Backend** (in `backend/`): Viaduct GraphQL middleware layer (Kotlin/Ktor)
-- **Database**: Supabase PostgreSQL with Row Level Security (database DDL in `dbschema/`)
+```
+React Frontend (Vite)
+    │
+    │ GraphQL
+    ▼
+Viaduct Backend (Kotlin/Ktor)
+    │
+    │ Supabase Client
+    ▼
+Supabase (PostgreSQL + Auth)
+```
 
-The backend provides a type-safe GraphQL API that sits between the React frontend and Supabase, enabling efficient data fetching with batch resolution and modular schema organization.
+- **Frontend**: React + Vite with shadcn/ui components
+- **Backend**: Viaduct GraphQL middleware (Kotlin/Ktor)
+- **Database**: Supabase PostgreSQL with Row Level Security
 
-## Quick Start
-
-This project uses [mise](https://mise.jdx.dev/) for unified tool management and orchestration:
+## Local Development
 
 ```bash
-# Install all dependencies (Java 21, Podman, Supabase CLI, etc.)
+# Install tools (requires mise: https://mise.jdx.dev)
 mise install
 
-# Start the full development environment
+# Start everything
 mise run dev
 ```
 
-This will start:
-- Frontend at http://localhost:5173
-- Backend GraphQL API at http://localhost:8080/graphql
-- GraphiQL playground at http://localhost:8080/graphiql
-- Supabase Studio at http://127.0.0.1:54323
+Services:
+- Frontend: http://localhost:5173
+- GraphQL API: http://localhost:8080/graphql
+- GraphiQL: http://localhost:8080/graphiql
+- Supabase Studio: http://127.0.0.1:54323
 
 ## Documentation
 
-**For detailed setup, development commands, architecture details, and troubleshooting, see [AGENTS.md](./AGENTS.md)**
-
-The CLAUDE.md file contains comprehensive documentation including:
-- Complete development commands (mise, npm, gradle, supabase)
-- Architecture and request flow details
-- GraphQL API reference with example queries
-- Environment configuration
-- Database schema
+See [CLAUDE.md](./CLAUDE.md) for complete documentation including:
+- Development commands
+- Architecture details
+- GraphQL API reference
 - Troubleshooting guide
 
-## Technology Stack
+## Costs
 
-**Frontend:**
-- React 18 with TypeScript
-- Vite for build tooling
-- shadcn/ui components
-- Tailwind CSS
-- Supabase Auth client
+- **Supabase**: Free tier (500MB database, 50K auth users)
+- **Render Frontend**: Free (static site)
+- **Render Backend**: Free (512MB RAM, spins down after inactivity)
+  - Upgrade to Starter ($7/mo) for always-on
 
-**Backend:**
-- Viaduct GraphQL framework
-- Kotlin with Ktor
-- Supabase Kotlin client
-- GraphQL Java
-
-**Infrastructure:**
-- Supabase (PostgreSQL + Auth + Realtime)
-- Podman for local containers
-- mise for tool orchestration
-
-## Project Origin
-
-This project was bootstrapped with [Lovable](https://lovable.dev/projects/be4f049d-baa1-4d1e-89a9-8c73750f8724) and extended with a Viaduct backend and Supabase integration.

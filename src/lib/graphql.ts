@@ -1,11 +1,51 @@
-import { supabase } from "@/integrations/supabase/client";
+import { getSupabase } from "@/integrations/supabase/client";
 
 interface GraphQLResponse<T> {
   data?: T;
   errors?: Array<{ message: string }>;
 }
 
-const GRAPHQL_ENDPOINT = import.meta.env.VITE_GRAPHQL_ENDPOINT || "http://localhost:8080/graphql";
+/**
+ * Normalize the GraphQL endpoint URL.
+ * Handles various formats:
+ * - Full URL: https://example.com/graphql
+ * - Host:port from Render: example.onrender.com:443
+ * - Hostname only: example.onrender.com
+ * - Internal Render hostname: viaduct-backend:10000 (derives public URL from current location)
+ * - Local development: http://localhost:8080/graphql
+ */
+function normalizeGraphQLEndpoint(endpoint: string | undefined): string {
+  if (!endpoint) {
+    return "http://localhost:8080/graphql";
+  }
+
+  // Already a full URL
+  if (endpoint.startsWith("http://") || endpoint.startsWith("https://")) {
+    // Ensure it ends with /graphql
+    return endpoint.endsWith("/graphql") ? endpoint : `${endpoint}/graphql`;
+  }
+
+  // Check if this is an internal Render hostname (no dots, like "viaduct-backend:10000")
+  // These are internal service discovery names that browsers can't resolve
+  const hostPart = endpoint.split(":")[0];
+  if (!hostPart.includes(".") && typeof window !== "undefined") {
+    // Derive the backend URL from the frontend URL
+    // viaduct-frontend.onrender.com -> viaduct-backend.onrender.com
+    const currentHost = window.location.hostname;
+    if (currentHost.includes(".onrender.com")) {
+      const backendHost = currentHost.replace("-frontend", "-backend");
+      console.log(`[GraphQL] Detected internal hostname, using derived URL: https://${backendHost}/graphql`);
+      return `https://${backendHost}/graphql`;
+    }
+  }
+
+  // Host:port format (from Render's fromService.hostport)
+  // or hostname only (from Render's fromService.host)
+  const baseUrl = `https://${endpoint}`;
+  return `${baseUrl}/graphql`;
+}
+
+const GRAPHQL_ENDPOINT = normalizeGraphQLEndpoint(import.meta.env.VITE_GRAPHQL_ENDPOINT);
 
 /**
  * Execute a GraphQL query or mutation against the Viaduct backend.
@@ -21,6 +61,7 @@ export async function executeGraphQL<T>(query: string, variables?: Record<string
   let session = null;
   let attempts = 0;
   const maxAttempts = 10;
+  const supabase = getSupabase();
 
   while (!session && attempts < maxAttempts) {
     const { data, error } = await supabase.auth.getSession();
@@ -214,3 +255,44 @@ export const REMOVE_GROUP_MEMBER = `
     })
   }
 `;
+
+// ----------------------------------------------------------------------------
+// Supabase Configuration (Public - no auth required)
+// ----------------------------------------------------------------------------
+
+export const GET_SUPABASE_CONFIG = `
+  query GetSupabaseConfig {
+    supabaseConfig {
+      url
+      anonKey
+    }
+  }
+`;
+
+/**
+ * Fetch Supabase configuration from the backend.
+ * This is a public endpoint that doesn't require authentication.
+ */
+export async function fetchSupabaseConfig(): Promise<{ url: string; anonKey: string }> {
+  const response = await fetch(GRAPHQL_ENDPOINT, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      query: GET_SUPABASE_CONFIG,
+    }),
+  });
+
+  if (!response.ok) {
+    throw new Error(`Failed to fetch Supabase config: ${response.status}`);
+  }
+
+  const result = await response.json();
+
+  if (result.errors) {
+    throw new Error(result.errors[0]?.message || "Failed to fetch Supabase config");
+  }
+
+  return result.data.supabaseConfig;
+}

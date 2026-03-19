@@ -1,16 +1,14 @@
 package com.viaduct
 
-import com.fasterxml.jackson.databind.ObjectMapper
 import com.fasterxml.jackson.module.kotlin.jacksonObjectMapper
+import com.viaduct.config.DelegatingTenantCodeInjector
 import com.viaduct.config.KoinTenantCodeInjector
-import com.viaduct.config.RequestContext
-import com.viaduct.config.appModule
 import com.viaduct.models.GraphQLRequest
 import com.viaduct.plugins.GraphQLAuthentication
+import com.viaduct.plugins.cachedRequestBody
+import com.viaduct.plugins.isPublicOperation
 import com.viaduct.plugins.requestContext
-import com.viaduct.policy.GroupMembershipCheckerFactory
 import com.viaduct.services.AuthService
-import com.viaduct.services.GroupService
 import io.ktor.client.*
 import io.ktor.http.*
 import io.ktor.serialization.jackson.*
@@ -21,31 +19,99 @@ import io.ktor.server.request.*
 import io.ktor.server.response.*
 import io.ktor.server.routing.*
 import io.ktor.server.plugins.cors.routing.CORS
+import org.koin.core.Koin
 import org.slf4j.event.Level
-import org.koin.ktor.plugin.Koin
-import org.koin.ktor.plugin.scope
-import org.koin.ktor.ext.get
-import org.koin.ktor.ext.getKoin
-import org.koin.logger.slf4jLogger
-import viaduct.api.bootstrap.ViaductTenantAPIBootstrapper
-import viaduct.service.runtime.SchemaRegistryConfiguration
-import viaduct.service.runtime.StandardViaduct
 import viaduct.service.api.ExecutionInput as ViaductExecutionInput
+import viaduct.service.api.SchemaId
+import viaduct.service.api.Viaduct
+import java.util.Base64
+
+private val logger = org.slf4j.LoggerFactory.getLogger("Application")
 
 /**
- * Configure the Ktor application with GraphQL and authentication
+ * Extract the project reference from a Supabase JWT key.
+ * Supabase JWTs contain a "ref" claim with the project reference.
+ * Returns null if the key is invalid or doesn't contain a ref.
  */
-fun Application.module() {
-    val supabaseUrl = System.getenv("SUPABASE_URL") ?: "http://127.0.0.1:54321"
-    val supabaseKey = System.getenv("SUPABASE_ANON_KEY") ?: error("SUPABASE_ANON_KEY must be set")
+fun extractProjectRefFromKey(key: String): String? {
+    return try {
+        // JWT format: header.payload.signature
+        val parts = key.split(".")
+        if (parts.size != 3) {
+            logger.warn("JWT key does not have 3 parts, got ${parts.size}")
+            return null
+        }
 
-    configureApplication(supabaseUrl, supabaseKey)
+        // Decode the payload (second part), handling URL-safe base64
+        val payload = parts[1]
+        val paddedPayload = when (payload.length % 4) {
+            2 -> "$payload=="
+            3 -> "$payload="
+            else -> payload
+        }
+        val decoded = Base64.getUrlDecoder().decode(paddedPayload)
+        val json = String(decoded)
+        logger.info("JWT payload: $json")
+
+        // Simple JSON parsing for "ref" field
+        val refMatch = Regex(""""ref"\s*:\s*"([^"]+)"""").find(json)
+        if (refMatch == null) {
+            logger.warn("No 'ref' field found in JWT payload")
+        }
+        refMatch?.groupValues?.get(1)
+    } catch (e: Exception) {
+        logger.warn("Failed to extract project ref from key: ${e.message}")
+        null
+    }
 }
 
 /**
- * Configure the application with the given Supabase credentials
+ * Derive the Supabase URL from project ID, explicit URL, or anon key.
+ * For hosted Supabase, the URL format is https://{project-id}.supabase.co
  */
-fun Application.configureApplication(supabaseUrl: String, supabaseKey: String) {
+fun deriveSupabaseUrl(explicitUrl: String?, projectId: String?, anonKey: String?): String {
+    // If explicit URL is provided, use it
+    if (!explicitUrl.isNullOrBlank()) {
+        return explicitUrl
+    }
+
+    // If project ID is provided, construct the URL
+    if (!projectId.isNullOrBlank()) {
+        val derivedUrl = "https://$projectId.supabase.co"
+        logger.info("Derived Supabase URL from project ID: $derivedUrl")
+        return derivedUrl
+    }
+
+    // Try to derive from the anon key (legacy JWT keys only)
+    if (anonKey != null) {
+        val projectRef = extractProjectRefFromKey(anonKey)
+        if (projectRef != null) {
+            val derivedUrl = "https://$projectRef.supabase.co"
+            logger.info("Derived Supabase URL from anon key: $derivedUrl")
+            return derivedUrl
+        }
+    }
+
+    // Fall back to local development URL
+    return "http://127.0.0.1:54321"
+}
+
+/**
+ * Configure the Ktor application with plugins and GraphQL routing.
+ *
+ * The pre-compiled [viaduct] instance, [cracInjector], and standalone [koin]
+ * container are all created by the entry point in [CracMain] before the Ktor
+ * server starts. Koin is managed externally (not as a Ktor plugin) so that
+ * singletons survive CRaC checkpoint/restore independently of the server.
+ */
+fun Application.configureApplication(
+    supabaseUrl: String,
+    supabaseKey: String,
+    configurationComplete: Boolean,
+    viaduct: Viaduct,
+    cracInjector: DelegatingTenantCodeInjector,
+    koin: Koin
+) {
     // Create object mapper for JSON serialization
     val objectMapper = jacksonObjectMapper()
 
@@ -73,59 +139,8 @@ fun Application.configureApplication(supabaseUrl: String, supabaseKey: String) {
         }
     }
 
-    // Install Koin plugin for dependency injection (Koin 4.x pattern)
-    install(Koin) {
-        slf4jLogger()
-        modules(appModule(supabaseUrl, supabaseKey))
-    }
-
-    // Register shutdown hook to close HttpClient properly
-    monitor.subscribe(ApplicationStopped) {
-        val httpClient = getKoin().getOrNull<HttpClient>()
-        httpClient?.close()
-    }
-
-    // Install GraphQL authentication plugin
-    // This handles extracting and validating auth tokens as a cross-cutting concern
-    install(GraphQLAuthentication) {
-        this.objectMapper = objectMapper
-    }
-
-    // Get the Koin instance from the application context
-    val koin = getKoin()
-
-    // Use Koin-based dependency injector for Viaduct resolvers
-    val koinInjector = KoinTenantCodeInjector(koin)
-
-    // Get services from Koin for application configuration
-    // Note: These are singletons needed at application startup for Viaduct configuration
-    val authService = koin.get<AuthService>()
-    val groupService = koin.get<GroupService>()
-    val supabaseService = koin.get<SupabaseService>()
-
-    // Build Viaduct service using StandardViaduct.Builder
-    // Register CheckerExecutorFactory for policy checks
-    val viaduct = StandardViaduct.Builder()
-        .withTenantAPIBootstrapperBuilder(
-            ViaductTenantAPIBootstrapper.Builder()
-                .tenantPackagePrefix("com.viaduct")
-                .tenantCodeInjector(koinInjector)
-        )
-        .withSchemaRegistryConfiguration(
-            SchemaRegistryConfiguration.fromResources(
-                scopes = setOf(
-                    SchemaRegistryConfiguration.ScopeConfig("default", setOf("default")),
-                    SchemaRegistryConfiguration.ScopeConfig("admin", setOf("default", "admin"))
-                ),
-                fullSchemaIds = listOf("default")
-            )
-        )
-        .withCheckerExecutorFactoryCreator { schema ->
-            GroupMembershipCheckerFactory(schema, groupService)
-        }
-        .build()
-
-    // Install CORS plugin (with idempotency check for test compatibility)
+    // Install CORS plugin EARLY - must be before auth plugin to handle error responses
+    // CORS headers need to be added to ALL responses, including 401 errors from auth
     if (pluginOrNull(CORS) == null) {
         install(CORS) {
             allowMethod(HttpMethod.Options)
@@ -137,49 +152,99 @@ fun Application.configureApplication(supabaseUrl: String, supabaseKey: String) {
 
             // Use environment-based configuration for security
             // In production, set ALLOWED_ORIGINS to comma-separated list of allowed origins
+            // Supports: full URLs (https://example.com), hostnames (example.com), or host:port
             val allowedOrigins = System.getenv("ALLOWED_ORIGINS")
                 ?.split(",")
                 ?.map { it.trim() }
+                ?.filter { it.isNotEmpty() }
                 ?: listOf("http://localhost:5173", "http://127.0.0.1:5173")
 
             allowedOrigins.forEach { origin ->
-                // Parse the origin URI to extract host and scheme
-                // allowHost() expects just the hostname:port, not the full URL
-                val uri = java.net.URI(origin)
-                val host = if (uri.port != -1) {
-                    "${uri.host}:${uri.port}"
-                } else {
-                    uri.host
+                try {
+                    // Handle different formats:
+                    // - Full URL: https://example.com or http://localhost:5173
+                    // - Hostname only: example.onrender.com (from Render's fromService)
+                    // - Host:port: example.com:443
+                    // - Render service name only: viaduct-frontend (append .onrender.com)
+                    val expandedOrigin = when {
+                        origin.startsWith("http://") || origin.startsWith("https://") -> origin
+                        origin.contains(".") -> origin  // Already has domain
+                        origin.contains(":") -> origin  // host:port format
+                        else -> "$origin.onrender.com"  // Render service name, append domain
+                    }
+                    val normalizedOrigin = when {
+                        expandedOrigin.startsWith("http://") || expandedOrigin.startsWith("https://") -> expandedOrigin
+                        expandedOrigin.contains(":") -> "https://$expandedOrigin"  // host:port format
+                        else -> "https://$expandedOrigin"  // hostname only, assume HTTPS
+                    }
+
+                    val uri = java.net.URI(normalizedOrigin)
+                    val host = if (uri.port != -1 && uri.port != 443 && uri.port != 80) {
+                        "${uri.host}:${uri.port}"
+                    } else {
+                        uri.host
+                    }
+                    val scheme = uri.scheme
+                    allowHost(host, schemes = listOf(scheme))
+                    logger.info("CORS: Allowing origin $scheme://$host")
+                } catch (e: Exception) {
+                    logger.warn("CORS: Failed to parse origin '$origin': ${e.message}")
                 }
-                val scheme = uri.scheme
-                allowHost(host, schemes = listOf(scheme))
             }
         }
     }
 
+    val httpClient = koin.getOrNull<HttpClient>()
+
+    // Get services from external Koin for the auth plugin and routing
+    val authService = koin.get<AuthService>()
+    val supabaseService = koin.get<SupabaseService>()
+
+    // Install GraphQL authentication plugin
+    // Services are injected from the external Koin container
+    install(GraphQLAuthentication) {
+        this.objectMapper = objectMapper
+        this.authService = authService
+        this.supabaseService = supabaseService
+        this.httpClient = httpClient ?: error("HttpClient not found in Koin")
+    }
+
     routing {
         post("/graphql") {
-            // Type-safe deserialization of GraphQL request
-            val requestBody = call.receiveText()
+            // Get request body - either from cache (if auth plugin already read it) or fresh
+            val requestBody = call.cachedRequestBody ?: call.receiveText()
             val request = objectMapper.readValue(requestBody, GraphQLRequest::class.java)
 
-            // Get RequestContext - authentication is already handled by the plugin
-            val requestContextWrapper = call.requestContext
+            // Check if this is a public operation (no auth required)
+            val schemaId: SchemaId
+            val requestContext: Any?
 
-            // Use AuthService to determine schema ID
-            val schemaId = authService.getSchemaId(requestContextWrapper.graphQLContext)
+            if (call.isPublicOperation) {
+                // Public operations use the "public" schema and no request context
+                schemaId = SchemaId.Scoped("public", setOf("public"))
+                requestContext = null
+            } else {
+                // Get RequestContext - authentication is already handled by the plugin
+                val requestContextWrapper = call.requestContext
 
-            // Build Viaduct ExecutionInput - pass the RequestContext wrapper
-            // Viaduct will pass this to all resolvers and policy executors
+                // Use AuthService to determine schema ID
+                val schemaIdStr = authService.getSchemaId(requestContextWrapper.graphQLContext)
+                schemaId = when (schemaIdStr) {
+                    "admin" -> SchemaId.Scoped("admin", setOf("default", "admin", "public"))
+                    else -> SchemaId.Scoped("default", setOf("default", "public"))
+                }
+                requestContext = requestContextWrapper
+            }
+
+            // Build Viaduct ExecutionInput
             val executionInput = ViaductExecutionInput.create(
-                schemaId = schemaId,
                 operationText = request.query,
                 variables = request.variables,
-                requestContext = requestContextWrapper // Pass the typed wrapper!
+                requestContext = requestContext
             )
 
             // Execute GraphQL query
-            val result = viaduct.execute(executionInput)
+            val result = viaduct.execute(executionInput, schemaId)
 
             // Ktor's ContentNegotiation automatically serializes the response to JSON
             call.respond(HttpStatusCode.OK, result.toSpecification())
@@ -194,7 +259,24 @@ fun Application.configureApplication(supabaseUrl: String, supabaseKey: String) {
         get("/health") {
             call.respondText("OK")
         }
+
+        // Setup status endpoint - shows configuration status
+        get("/setup") {
+            val status = mapOf(
+                "configured" to configurationComplete,
+                "supabaseUrl" to supabaseUrl,
+                "supabaseUrlSource" to if (System.getenv("SUPABASE_URL") != null) "environment" else "derived from project ID or anon key",
+                "supabaseAnonKey" to (System.getenv("SUPABASE_ANON_KEY") != null),
+                "supabaseServiceRoleKey" to (System.getenv("SUPABASE_SERVICE_ROLE_KEY") != null),
+                "allowedOrigins" to (System.getenv("ALLOWED_ORIGINS") ?: "localhost defaults"),
+                "message" to if (configurationComplete) {
+                    "All required configuration is set. The API is ready to use."
+                } else {
+                    "Missing required configuration. Set SUPABASE_ANON_KEY to enable GraphQL queries."
+                },
+                "docs" to "https://supabase.com/dashboard → Settings → API → 'legacy anon, service_role API Keys'"
+            )
+            call.respond(HttpStatusCode.OK, status)
+        }
     }
 }
-
-// Entry point is now EngineMain configured via application.conf

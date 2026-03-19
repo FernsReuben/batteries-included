@@ -4,6 +4,7 @@ import io.github.jan.supabase.SupabaseClient
 import io.github.jan.supabase.createSupabaseClient
 import io.github.jan.supabase.auth.Auth
 import io.github.jan.supabase.auth.auth
+import io.github.jan.supabase.auth.providers.builtin.Email
 import io.github.jan.supabase.auth.user.UserInfo
 import io.github.jan.supabase.postgrest.Postgrest
 import io.github.jan.supabase.postgrest.from
@@ -14,33 +15,10 @@ import io.ktor.client.request.*
 import io.ktor.client.statement.*
 import io.ktor.client.call.*
 import io.ktor.http.*
+import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.Transient
 import kotlinx.serialization.json.Json
-
-@Serializable
-data class ChecklistItemEntity(
-    val id: String,
-    val title: String,
-    val completed: Boolean,
-    val user_id: String,
-    val group_id: String? = null,
-    val created_at: String,
-    val updated_at: String
-)
-
-@Serializable
-data class BlogPostEntity(
-    val id: String,
-    val group_id: String,
-    val user_id: String,
-    val title: String,
-    val slug: String,
-    val content: String,
-    val published: Boolean,
-    val created_at: String,
-    val updated_at: String
-)
 
 @Serializable
 data class UserEntity(
@@ -48,26 +26,6 @@ data class UserEntity(
     val email: String,
     val raw_app_meta_data: Map<String, kotlinx.serialization.json.JsonElement>? = null,
     val created_at: String
-)
-
-/**
- * Input for creating a new checklist item
- */
-@Serializable
-data class CreateChecklistItemInput(
-    val title: String,
-    val user_id: String,
-    val group_id: String? = null,
-    val completed: Boolean = false
-)
-
-/**
- * Input for updating a checklist item
- */
-@Serializable
-data class UpdateChecklistItemInput(
-    val completed: Boolean? = null,
-    val title: String? = null
 )
 
 /**
@@ -96,30 +54,6 @@ data class DeleteUserInput(
 )
 
 /**
- * Input for creating a new blog post
- */
-@Serializable
-data class CreateBlogPostInput(
-    val group_id: String,
-    val user_id: String,
-    val title: String,
-    val slug: String,
-    val content: String,
-    val published: Boolean = false
-)
-
-/**
- * Input for updating a blog post
- */
-@Serializable
-data class UpdateBlogPostInput(
-    val title: String? = null,
-    val slug: String? = null,
-    val content: String? = null,
-    val published: Boolean? = null
-)
-
-/**
  * Request context that can be safely serialized
  * Contains only the user ID, not the authenticated client (which is not serializable)
  */
@@ -130,6 +64,43 @@ data class GraphQLRequestContext(
     val isAdmin: Boolean = false
 )
 
+/**
+ * Auth session response from Supabase GoTrue API
+ */
+@Serializable
+data class AuthSessionResponse(
+    @SerialName("access_token") val accessToken: String,
+    @SerialName("refresh_token") val refreshToken: String,
+    @SerialName("expires_in") val expiresIn: Int,
+    val user: AuthUserResponse
+)
+
+/**
+ * User info from Supabase GoTrue API
+ */
+@Serializable
+data class AuthUserResponse(
+    val id: String,
+    val email: String? = null
+)
+
+/**
+ * Sign in/up request body
+ */
+@Serializable
+data class AuthCredentials(
+    val email: String,
+    val password: String
+)
+
+/**
+ * Refresh token request body
+ */
+@Serializable
+data class RefreshTokenRequest(
+    @SerialName("refresh_token") val refreshToken: String
+)
+
 open class SupabaseService(
     val supabaseUrl: String,
     val supabaseKey: String,
@@ -137,16 +108,19 @@ open class SupabaseService(
 ) {
     // Admin client for token verification only
     // Uses the shared HttpClient injected from Koin for connection pooling
-    private val adminClient: SupabaseClient = createSupabaseClient(
-        supabaseUrl = supabaseUrl,
-        supabaseKey = supabaseKey
-    ) {
-        install(Auth) {
-            // Configure Auth module to use longer timeout for token verification
-            // This is needed because local Supabase can be slow
-        }
+    // Lazy-initialized to avoid opening HTTP connections at construction time (CRaC-safe)
+    private val adminClient: SupabaseClient by lazy {
+        createSupabaseClient(
+            supabaseUrl = supabaseUrl,
+            supabaseKey = supabaseKey
+        ) {
+            install(Auth) {
+                // Configure Auth module to use longer timeout for token verification
+                // This is needed because local Supabase can be slow
+            }
 
-        httpEngine = httpClient.engine
+            httpEngine = httpClient.engine
+        }
     }
 
     /**
@@ -164,18 +138,23 @@ open class SupabaseService(
      * Create an authenticated Supabase client for a specific user
      * This client will use the user's JWT token, enabling RLS policies
      */
-    fun createAuthenticatedClient(accessToken: String, sharedHttpClient: HttpClient): AuthenticatedSupabaseClient {
-        // Create a client that will use the user's access token for all requests
-        // By using the token as the supabaseKey, Postgrest will automatically add it to headers
+    fun createAuthenticatedClient(userAccessToken: String, sharedHttpClient: HttpClient): AuthenticatedSupabaseClient {
+        // Create a client with the anon key for apikey header
+        // Use accessToken parameter to set Authorization header for all Postgrest requests
         val client = createSupabaseClient(
             supabaseUrl = supabaseUrl,
-            supabaseKey = accessToken // Pass JWT as the key for Postgrest requests
+            supabaseKey = supabaseKey // Use anon key for apikey header
         ) {
-            install(Postgrest)
-            httpEngine = httpClient.engine  // Use the injected shared HttpClient
+            // Provide the user's access token - this sets the Authorization header for Postgrest
+            // Note: Cannot use install(Auth) with custom accessToken provider per Supabase SDK
+            accessToken = { userAccessToken }
+
+            install(Postgrest) {
+                defaultSchema = "public"
+            }
         }
 
-        return AuthenticatedSupabaseClient(client, sharedHttpClient, accessToken, supabaseUrl, supabaseKey)
+        return AuthenticatedSupabaseClient(client, sharedHttpClient, userAccessToken, supabaseUrl, supabaseKey)
     }
 
     /**
@@ -189,6 +168,65 @@ open class SupabaseService(
 
         // Use the shared HttpClient injected via constructor
         return createAuthenticatedClient(context.accessToken, httpClient)
+    }
+
+    private val json = Json { ignoreUnknownKeys = true }
+
+    /**
+     * Sign in with email and password.
+     * Calls Supabase GoTrue API directly.
+     */
+    suspend fun signIn(email: String, password: String): AuthSessionResponse {
+        val response: HttpResponse = httpClient.post("$supabaseUrl/auth/v1/token?grant_type=password") {
+            header("apikey", supabaseKey)
+            contentType(ContentType.Application.Json)
+            setBody(json.encodeToString(AuthCredentials.serializer(), AuthCredentials(email, password)))
+        }
+
+        if (response.status != HttpStatusCode.OK) {
+            val errorBody = response.bodyAsText()
+            throw IllegalArgumentException("Authentication failed: $errorBody")
+        }
+
+        return json.decodeFromString(AuthSessionResponse.serializer(), response.bodyAsText())
+    }
+
+    /**
+     * Sign up with email and password.
+     * Calls Supabase GoTrue API directly.
+     */
+    suspend fun signUp(email: String, password: String): AuthSessionResponse {
+        val response: HttpResponse = httpClient.post("$supabaseUrl/auth/v1/signup") {
+            header("apikey", supabaseKey)
+            contentType(ContentType.Application.Json)
+            setBody(json.encodeToString(AuthCredentials.serializer(), AuthCredentials(email, password)))
+        }
+
+        if (response.status != HttpStatusCode.OK) {
+            val errorBody = response.bodyAsText()
+            throw IllegalArgumentException("Sign up failed: $errorBody")
+        }
+
+        return json.decodeFromString(AuthSessionResponse.serializer(), response.bodyAsText())
+    }
+
+    /**
+     * Refresh an access token using a refresh token.
+     * Calls Supabase GoTrue API directly.
+     */
+    suspend fun refreshToken(refreshToken: String): AuthSessionResponse {
+        val response: HttpResponse = httpClient.post("$supabaseUrl/auth/v1/token?grant_type=refresh_token") {
+            header("apikey", supabaseKey)
+            contentType(ContentType.Application.Json)
+            setBody(json.encodeToString(RefreshTokenRequest.serializer(), RefreshTokenRequest(refreshToken)))
+        }
+
+        if (response.status != HttpStatusCode.OK) {
+            val errorBody = response.bodyAsText()
+            throw IllegalArgumentException("Token refresh failed: $errorBody")
+        }
+
+        return json.decodeFromString(AuthSessionResponse.serializer(), response.bodyAsText())
     }
 }
 
@@ -204,84 +242,6 @@ class AuthenticatedSupabaseClient(
     private val supabaseKey: String
 ) {
     private val json = Json { ignoreUnknownKeys = true }
-
-    /**
-     * Get all checklist items for the authenticated user
-     * RLS policies will automatically filter by the user's ID from the JWT
-     */
-    suspend fun getChecklistItems(): List<ChecklistItemEntity> {
-        return client.from("checklist_items")
-            .select()
-            .decodeList<ChecklistItemEntity>()
-    }
-
-    /**
-     * Get a checklist item by ID
-     * RLS policies will ensure the user can only access their own items
-     */
-    suspend fun getChecklistItemById(id: String): ChecklistItemEntity? {
-        return client.from("checklist_items")
-            .select {
-                filter {
-                    eq("id", id)
-                }
-            }
-            .decodeSingleOrNull<ChecklistItemEntity>()
-    }
-
-    /**
-     * Create a new checklist item
-     * RLS policies will automatically set user_id from the JWT
-     */
-    suspend fun createChecklistItem(title: String, userId: String, groupId: String? = null): ChecklistItemEntity {
-        return client.from("checklist_items")
-            .insert(
-                CreateChecklistItemInput(
-                    title = title,
-                    user_id = userId,
-                    group_id = groupId,
-                    completed = false
-                )
-            ) {
-                select()
-            }
-            .decodeSingle<ChecklistItemEntity>()
-    }
-
-    /**
-     * Update a checklist item
-     * RLS policies will ensure the user can only update their own items
-     */
-    suspend fun updateChecklistItem(
-        id: String,
-        completed: Boolean? = null,
-        title: String? = null
-    ): ChecklistItemEntity {
-        return client.from("checklist_items")
-            .update(
-                UpdateChecklistItemInput(completed = completed, title = title)
-            ) {
-                filter {
-                    eq("id", id)
-                }
-                select()
-            }
-            .decodeSingle<ChecklistItemEntity>()
-    }
-
-    /**
-     * Delete a checklist item
-     * RLS policies will ensure the user can only delete their own items
-     */
-    suspend fun deleteChecklistItem(id: String): Boolean {
-        client.from("checklist_items")
-            .delete {
-                filter {
-                    eq("id", id)
-                }
-            }
-        return true
-    }
 
     /**
      * Set a user's admin status
@@ -366,20 +326,20 @@ class AuthenticatedSupabaseClient(
     }
 
     /**
-     * Get all checkbox groups the user is a member of
+     * Get all groups the user is a member of
      * Uses the Supabase Postgrest client which properly handles RLS policies
      */
-    suspend fun getCheckboxGroups(): List<com.viaduct.services.CheckboxGroupEntity> {
+    suspend fun getGroups(): List<com.viaduct.services.CheckboxGroupEntity> {
         return client.from("groups")
             .select()
             .decodeList<com.viaduct.services.CheckboxGroupEntity>()
     }
 
     /**
-     * Get a specific checkbox group by ID
+     * Get a specific group by ID
      * Uses the Supabase Postgrest client which properly handles RLS policies
      */
-    suspend fun getCheckboxGroupById(groupId: String): com.viaduct.services.CheckboxGroupEntity? {
+    suspend fun getGroupById(groupId: String): com.viaduct.services.CheckboxGroupEntity? {
         return client.from("groups")
             .select {
                 filter {
@@ -390,9 +350,9 @@ class AuthenticatedSupabaseClient(
     }
 
     /**
-     * Create a new checkbox group
+     * Create a new group
      */
-    suspend fun createCheckboxGroup(
+    suspend fun createGroup(
         name: String,
         description: String?,
         ownerId: String
@@ -458,144 +418,6 @@ class AuthenticatedSupabaseClient(
             parameter("group_id", "eq.$groupId")
             parameter("user_id", "eq.$userId")
         }
-        return true
-    }
-
-    /**
-     * Get checklist items for a specific group
-     */
-    suspend fun getChecklistItemsByGroup(groupId: String): List<ChecklistItemEntity> {
-        return client.from("checklist_items")
-            .select {
-                filter {
-                    eq("group_id", groupId)
-                }
-            }
-            .decodeList<ChecklistItemEntity>()
-    }
-
-    /**
-     * Get all blog posts for a specific group
-     * RLS policies will filter based on membership and published status
-     */
-    suspend fun getBlogPostsByGroup(groupId: String): List<BlogPostEntity> {
-        return client.from("blog_posts")
-            .select {
-                filter {
-                    eq("group_id", groupId)
-                }
-            }
-            .decodeList<BlogPostEntity>()
-    }
-
-    /**
-     * Get a blog post by ID
-     * RLS policies will ensure the user can only access posts in groups they're members of
-     */
-    suspend fun getBlogPostById(id: String): BlogPostEntity? {
-        return client.from("blog_posts")
-            .select {
-                filter {
-                    eq("id", id)
-                }
-            }
-            .decodeSingleOrNull<BlogPostEntity>()
-    }
-
-    /**
-     * Get a blog post by slug within a specific group
-     */
-    suspend fun getBlogPostBySlug(groupId: String, slug: String): BlogPostEntity? {
-        return client.from("blog_posts")
-            .select {
-                filter {
-                    eq("group_id", groupId)
-                    eq("slug", slug)
-                }
-            }
-            .decodeSingleOrNull<BlogPostEntity>()
-    }
-
-    /**
-     * Get all blog posts created by the authenticated user
-     */
-    suspend fun getMyBlogPosts(userId: String): List<BlogPostEntity> {
-        return client.from("blog_posts")
-            .select {
-                filter {
-                    eq("user_id", userId)
-                }
-            }
-            .decodeList<BlogPostEntity>()
-    }
-
-    /**
-     * Create a new blog post
-     * RLS policies will ensure the user is a member of the group
-     */
-    suspend fun createBlogPost(
-        groupId: String,
-        userId: String,
-        title: String,
-        slug: String,
-        content: String,
-        published: Boolean = false
-    ): BlogPostEntity {
-        return client.from("blog_posts")
-            .insert(
-                CreateBlogPostInput(
-                    group_id = groupId,
-                    user_id = userId,
-                    title = title,
-                    slug = slug,
-                    content = content,
-                    published = published
-                )
-            ) {
-                select()
-            }
-            .decodeSingle<BlogPostEntity>()
-    }
-
-    /**
-     * Update a blog post
-     * RLS policies will ensure the user owns the post
-     */
-    suspend fun updateBlogPost(
-        id: String,
-        title: String? = null,
-        slug: String? = null,
-        content: String? = null,
-        published: Boolean? = null
-    ): BlogPostEntity {
-        return client.from("blog_posts")
-            .update(
-                UpdateBlogPostInput(
-                    title = title,
-                    slug = slug,
-                    content = content,
-                    published = published
-                )
-            ) {
-                filter {
-                    eq("id", id)
-                }
-                select()
-            }
-            .decodeSingle<BlogPostEntity>()
-    }
-
-    /**
-     * Delete a blog post
-     * RLS policies will ensure the user owns the post
-     */
-    suspend fun deleteBlogPost(id: String): Boolean {
-        client.from("blog_posts")
-            .delete {
-                filter {
-                    eq("id", id)
-                }
-            }
         return true
     }
 }

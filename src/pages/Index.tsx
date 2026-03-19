@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { supabase } from "@/integrations/supabase/client";
+import { getSupabase } from "@/integrations/supabase/client";
 import { Session } from "@supabase/supabase-js";
 import { UserList } from "@/components/UserList";
 import { Button } from "@/components/ui/button";
@@ -24,6 +24,7 @@ const Index = () => {
   const { toast } = useToast();
 
   useEffect(() => {
+    const supabase = getSupabase();
     supabase.auth.getSession().then(({ data: { session } }) => {
       setSession(session);
       if (session?.user?.app_metadata?.is_admin) {
@@ -81,6 +82,7 @@ const Index = () => {
   };
 
   const handleSignOut = async () => {
+    const supabase = getSupabase();
     await supabase.auth.signOut();
     navigate("/auth");
   };
@@ -125,8 +127,8 @@ const Index = () => {
           <CardHeader>
             <div className="flex items-center justify-between">
               <div>
-                <CardTitle>My Groups & Blogs</CardTitle>
-                <CardDescription>Groups you're a member of and their blogs</CardDescription>
+                <CardTitle>My Groups</CardTitle>
+                <CardDescription>Groups you're a member of</CardDescription>
               </div>
               <Button onClick={handleCreateGroup} size="sm">
                 <Plus className="h-4 w-4 mr-2" />
