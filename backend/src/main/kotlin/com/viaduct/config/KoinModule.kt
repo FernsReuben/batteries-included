@@ -5,6 +5,7 @@ import com.viaduct.resolvers.*
 import com.viaduct.services.AuthService
 import com.viaduct.services.GroupService
 import com.viaduct.services.UserService
+import com.viaduct.services.TicketService
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.cio.CIO
 import io.ktor.client.plugins.HttpTimeout
@@ -14,16 +15,16 @@ import org.koin.dsl.module
 /**
  * Koin module for dependency injection configuration.
  *
- * This module is used standalone (not as a Ktor plugin) so that singletons
- * can survive CRaC checkpoint/restore independently of the server.
- * Request-scoped context creation is handled directly by the auth plugin.
+ * This module is used standalone (not as a Ktor plugin) so that singletons can survive CRaC
+ * checkpoint/restore independently of the server. Request-scoped context creation is handled
+ * directly by the auth plugin.
  */
 fun appModule(supabaseUrl: String, supabaseKey: String) = module {
     // HTTP client (singleton) - shared across all requests for connection pooling
     single {
         HttpClient(CIO) {
             install(HttpTimeout) {
-                requestTimeoutMillis = 60_000  // 60 seconds for Supabase requests
+                requestTimeoutMillis = 60_000 // 60 seconds for Supabase requests
                 connectTimeoutMillis = 60_000
                 socketTimeoutMillis = 60_000
             }
@@ -35,6 +36,7 @@ fun appModule(supabaseUrl: String, supabaseKey: String) = module {
     singleOf(::AuthService)
     singleOf(::UserService)
     singleOf(::GroupService)
+    singleOf(::TicketService)
 
     // Resolvers - Auth (public, no authentication required)
     singleOf(::SignInResolver)
@@ -60,4 +62,11 @@ fun appModule(supabaseUrl: String, supabaseKey: String) = module {
 
     // Resolvers - Group Fields
     singleOf(::GroupMembersResolver)
+
+    // Resolvers - Ticketing
+    singleOf(::TicketsQueryResolver)
+    singleOf(::TicketsByGroupResolver)
+    singleOf(::CreateTicketResolver)
+    singleOf(::UpdateTicketResolver)
+    singleOf(::DeleteTicketResolver)
 }

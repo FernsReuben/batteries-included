@@ -150,6 +150,8 @@ fun Application.configureApplication(
             allowHeader(HttpHeaders.ContentType)
             allowHeader("X-User-Id")
 
+            //allowCredentials = true
+
             // Use environment-based configuration for security
             // In production, set ALLOWED_ORIGINS to comma-separated list of allowed origins
             // Supports: full URLs (https://example.com), hostnames (example.com), or host:port

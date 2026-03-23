@@ -21,7 +21,7 @@ export default function Setup({ error: initError }: SetupProps = {}) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(initError || null);
 
-  const graphqlEndpoint = import.meta.env.VITE_GRAPHQL_ENDPOINT || "http://localhost:8080/graphql";
+  const graphqlEndpoint = import.meta.env.VITE_GRAPHQL_ENDPOINT || "http://localhost:10000/graphql";
   const backendUrl = graphqlEndpoint.replace("/graphql", "");
 
   const checkBackendStatus = async () => {

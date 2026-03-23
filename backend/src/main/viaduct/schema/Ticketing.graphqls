@@ -1,0 +1,81 @@
+"""
+Ticket resource.
+Only members of the group can access tickets.
+"""
+type Ticket implements Node
+  @scope(to: ["default"])
+  @requiresGroupMembership(groupIdField: "groupId") {
+  
+  id: ID!
+  subject: String!
+  body: String!
+  status: String! # open | closed
+
+  userId: String!
+  groupId: ID!
+
+  createdAt: String!
+  updatedAt: String!
+}
+
+# ----------------------
+# INPUTS
+# ----------------------
+
+input CreateTicketInput @scope(to: ["default"]) {
+  subject: String!
+  body: String!
+  groupId: ID! @idOf(type: "Group")
+}
+
+input UpdateTicketInput @scope(to: ["default"]) {
+  id: ID! @idOf(type: "Ticket")
+  subject: String
+  body: String
+  status: String
+}
+
+input DeleteTicketInput @scope(to: ["default"]) {
+  id: ID! @idOf(type: "Ticket")
+}
+
+# ----------------------
+# QUERIES
+# ----------------------
+
+extend type Query @scope(to: ["default"]) {
+  """
+  Get all tickets from groups the user is a member of.
+  """
+  tickets: [Ticket!]! @resolver
+
+  """
+  Get tickets for a specific group.
+  """
+  ticketsByGroup(groupId: ID! @idOf(type: "Group")): [Ticket!]! @resolver
+}
+
+# ----------------------
+# MUTATIONS
+# ----------------------
+
+extend type Mutation @scope(to: ["default"]) {
+  """
+  Create a new ticket.
+  """
+  createTicket(input: CreateTicketInput!): Ticket! @resolver
+
+  """
+  Update a ticket (including closing it).
+  """
+  updateTicket(input: UpdateTicketInput!): Ticket!
+    @resolver
+    @requiresGroupMembership
+
+  """
+  Delete a ticket.
+  """
+  deleteTicket(input: DeleteTicketInput!): Boolean!
+    @resolver
+    @requiresGroupMembership
+}

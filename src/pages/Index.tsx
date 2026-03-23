@@ -5,9 +5,10 @@ import { Session } from "@supabase/supabase-js";
 import { UserList } from "@/components/UserList";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { LogOut, Shield, BookOpen, Plus } from "lucide-react";
+import { LogOut, Shield, Plus } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { executeGraphQL, GET_GROUPS, CREATE_GROUP } from "@/lib/graphql";
+import { TicketManager } from "@/components/TicketManager";
 
 interface Group {
   id: string;
@@ -27,28 +28,15 @@ const Index = () => {
     const supabase = getSupabase();
     supabase.auth.getSession().then(({ data: { session } }) => {
       setSession(session);
-      if (session?.user?.app_metadata?.is_admin) {
-        setIsAdmin(true);
-      }
-      if (!session) {
-        navigate("/auth");
-      } else {
-        loadGroups();
-      }
+      setIsAdmin(!!session?.user?.app_metadata?.is_admin);
+      if (!session) navigate("/auth");
+      else loadGroups();
     });
 
-    const {
-      data: { subscription },
-    } = supabase.auth.onAuthStateChange((_event, session) => {
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
       setSession(session);
-      if (session?.user?.app_metadata?.is_admin) {
-        setIsAdmin(true);
-      } else {
-        setIsAdmin(false);
-      }
-      if (!session) {
-        navigate("/auth");
-      }
+      setIsAdmin(!!session?.user?.app_metadata?.is_admin);
+      if (!session) navigate("/auth");
     });
 
     return () => subscription.unsubscribe();
@@ -69,7 +57,6 @@ const Index = () => {
   const handleCreateGroup = async () => {
     const name = prompt("Enter group name:");
     if (!name) return;
-
     const description = prompt("Enter group description (optional):");
 
     try {
@@ -87,9 +74,7 @@ const Index = () => {
     navigate("/auth");
   };
 
-  if (!session) {
-    return null;
-  }
+  if (!session) return null;
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-background via-primary/5 to-accent/5 p-4 md:p-8">
@@ -111,13 +96,8 @@ const Index = () => {
               )}
             </div>
           </div>
-          <Button
-            variant="outline"
-            onClick={handleSignOut}
-            className="transition-all duration-300 hover:border-destructive hover:text-destructive"
-          >
-            <LogOut className="h-4 w-4 mr-2" />
-            Sign Out
+          <Button variant="outline" onClick={handleSignOut} className="transition-all duration-300 hover:border-destructive hover:text-destructive">
+            <LogOut className="h-4 w-4 mr-2" /> Sign Out
           </Button>
         </div>
 
@@ -131,8 +111,7 @@ const Index = () => {
                 <CardDescription>Groups you're a member of</CardDescription>
               </div>
               <Button onClick={handleCreateGroup} size="sm">
-                <Plus className="h-4 w-4 mr-2" />
-                New Group
+                <Plus className="h-4 w-4 mr-2" /> New Group
               </Button>
             </div>
           </CardHeader>
@@ -144,26 +123,10 @@ const Index = () => {
             ) : (
               <div className="space-y-3">
                 {groups.map((group) => (
-                  <Card key={group.id} className="hover:shadow-md transition-shadow">
-                    <CardHeader className="py-4">
-                      <div className="flex items-center justify-between">
-                        <div>
-                          <CardTitle className="text-lg">{group.name}</CardTitle>
-                          {group.description && (
-                            <CardDescription>{group.description}</CardDescription>
-                          )}
-                        </div>
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          onClick={() => navigate(`/blog/${group.id}`)}
-                        >
-                          <BookOpen className="h-4 w-4 mr-2" />
-                          View Blog
-                        </Button>
-                      </div>
-                    </CardHeader>
-                  </Card>
+                  <div key={group.id}>
+                    <h3 className="font-bold">{group.name}</h3>
+                    <TicketManager groupId={group.id} />
+                  </div>
                 ))}
               </div>
             )}
@@ -173,8 +136,7 @@ const Index = () => {
         <div className="bg-card rounded-lg border p-6 space-y-4">
           <h2 className="text-xl font-semibold">Welcome to the GraphQL Policy Framework</h2>
           <p className="text-muted-foreground">
-            This is a generic policy checker framework with group-based access control.
-            Each group acts as a separate multi-tenant blog platform.
+            This is a generic policy checker framework with group-based access control. Each group acts as a separate multi-tenant blog platform.
           </p>
         </div>
 

@@ -94,7 +94,7 @@
 #   Required for group-based items.
 #   The @idOf directive ensures type-safe GlobalID references.
 #   """
-#   groupId: ID! @idOf(type: "CheckboxGroup")
+#   groupId: ID! @idOf(type: "Group")
 # }
 #
 # """
@@ -142,7 +142,7 @@
 #   Only accessible if the user is a member of the group.
 #   The @requiresGroupMembership directive enforces access control.
 #   """
-#   checklistItemsByGroup(groupId: ID! @idOf(type: "CheckboxGroup")): [ChecklistItem!]! @resolver @requiresGroupMembership
+#   checklistItemsByGroup(groupId: ID! @idOf(type: "Group")): [ChecklistItem!]! @resolver @requiresGroupMembership
 # }
 #
 # extend type Mutation @scope(to: ["default"]) {

@@ -10,7 +10,7 @@ afterEach(() => {
 // Mock environment variables
 process.env.VITE_SUPABASE_URL = 'http://localhost:54321';
 process.env.VITE_SUPABASE_PUBLISHABLE_KEY = 'test-key';
-process.env.VITE_GRAPHQL_ENDPOINT = 'http://localhost:8080/graphql';
+process.env.VITE_GRAPHQL_ENDPOINT = 'http://localhost:10000/graphql';
 
 // Mock IntersectionObserver
 global.IntersectionObserver = class IntersectionObserver {
